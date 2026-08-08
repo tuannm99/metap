@@ -12,7 +12,7 @@
 | 5. Workflow Engine V1 | Done |
 | 6. Frontend Core | Partial |
 | 7. Module Migration Strategy | Not started |
-| 8. Hardening | Not started |
+| 8. Hardening | Partial |
 | 9. Multi-Service Evolution | Trigger-based (no trigger fired yet) |
 | 10. Monorepo, npm publish | Not started |
 | 11. Low-code Platform Backbone Architecture | In progress |
@@ -274,19 +274,47 @@ Suggested order:
 
 ## Phase 8: Hardening
 
-**Status: Not started.**
+**Status: Partial** — started 2026-08-09. `docs/rust-core-viability.md`'s Migration Order
+step 8 note deliberately deferred this whole phase's Rust-side gap (helmet-equivalent
+headers, rate limiting, requestId/traceId) out of the initial HTTP port; that gap is what
+got closed first.
 
 Goals:
 
-- Secret manager integration.
-- CORS allowlist by environment.
-- CSP.
-- HTML sanitizer.
-- File scanning hook.
-- non-root Docker image.
-- CI checks.
-- load tests for list/query/export.
-- backup/restore drill.
+- ~~Secret manager integration~~ — Not started. No production deployment topology is
+  documented yet (`docs/architectures/11-risks.md`) to say what secret manager it would
+  integrate with; config today is `.env` files (dev-appropriate, not a production posture).
+- ~~CORS allowlist by environment~~ — **Done**, predates this phase being tracked:
+  `CORS_ORIGINS` (`crates/metap-infra/src/config.rs`) is a per-environment env var, comma-
+  separated, defaulting to empty (permissive `CorsLayer::new()`) only when unset — see
+  `metap_http::build_router`'s doc comment for the `allow_credentials` + explicit-origin-list
+  constraint this enforces.
+- ~~Helmet-equivalent security headers~~ — **Done (2026-08-09)**:
+  `crates/metap-http/src/security_headers.rs`, applied globally in `build_router` (covers
+  `apps/crm-server`'s static SPA fallback too, not just `/api`/`/metadata`) —
+  Content-Security-Policy (helmet's `'self'`-based default, safe for a same-origin SPA),
+  X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Strict-Transport-Security,
+  Cross-Origin-Opener/Resource-Policy, and the rest of helmet's default set.
+- CSP — see "Helmet-equivalent security headers" above; folded in rather than tracked
+  separately, since axum has no helmet-equivalent crate to configure a CSP directive on.
+- HTML sanitizer / File scanning hook — Not applicable yet: this is a JSON-only API with no
+  HTML rendering and no file-upload endpoint. Revisit if either is added.
+- ~~Rate limiting~~ (not an original Phase 8 goal, added from the Rust-specific gap above) —
+  **Done (2026-08-09)**: `tower_governor`, keyed on peer IP, ~300 req/min (a token-bucket
+  approximation of the old `@fastify/rate-limit` fixed-window default — see
+  `build_router`'s doc comment), 429 with the same `too_many_requests` error-body shape as
+  every other error response. Needs the serving binary to use
+  `into_make_service_with_connect_info::<SocketAddr>()` — `apps/crm-server/src/main.rs` and
+  the `metap-http` e2e test both do.
+- ~~requestId/traceId propagation~~ (the other Rust-specific gap) — **Done (2026-08-09)**:
+  `crates/metap-http/src/request_context.rs`, `x-request-id`/`x-trace-id` response headers
+  on every request, `x-trace-id` echoed when the caller sends a valid one, and both ids
+  injected into every 4xx/5xx JSON error body centrally (not threaded through the ~30
+  individual `service_error_response`/`internal_error_response` call sites).
+- non-root Docker image — Not started. No Dockerfile exists yet at all.
+- CI checks — Not started. No `.github/workflows` (or equivalent) exists yet.
+- load tests for list/query/export — Not started.
+- backup/restore drill — Not started.
 
 ## Phase 9: Multi-Service Evolution
 
@@ -358,9 +386,10 @@ Goals:
   a CORS-config panic only reachable with a non-empty origin list) — both fixed, both now
   covered by tests.
 - ~~Prove the port against the real business entity, not just fixtures~~ — **Done
-  (2026-08-07)**: `crates/crm-server`, a real `apps/crm`-equivalent binary running the actual
-  `crm.customers` entity (ported from `customer.entity.ts`), verified live over HTTP —
-  `pnpm dev:rs` to run it.
+  (2026-08-07)**: `apps/crm-server` (originally `crates/crm-server`, moved when `crates/`
+  was scoped to library crates + ops binaries only — see the Repo Structure note below), a
+  real `apps/crm`-equivalent binary running the actual `crm.customers` entity (ported from
+  `customer.entity.ts`), verified live over HTTP — `pnpm dev:rs` to run it.
 - ~~Delete `apps/crm`/`packages/core` once the port no longer needs them~~ — **Done
   (2026-08-07)**. Closed three gaps first so nothing was silently stranded: JWT keys moved
   to `crates/crm-server/keys/`, the three `packages/core/scripts/*.mjs` dev scripts became
@@ -369,8 +398,13 @@ Goals:
   by running the full e2e suite against a database migrated from scratch by that tool alone,
   *before* deleting anything. See `docs/rust-core-viability.md`'s "TS Removal" section.
   `packages/platform-react`/`apps/crm-fe` untouched (frontend was always HTTP-only). Known
-  gaps this surfaced, not new ones: admin HTTP routes (policy CRUD, role grant/revoke) still
-  don't exist over HTTP, only as functions with e2e coverage.
+  gap this surfaced at the time: admin HTTP routes (policy CRUD, role grant/revoke) didn't
+  exist over HTTP, only as functions with e2e coverage — closed 2026-08-08, see
+  `crates/metap-http/src/routes/admin.rs` (`AdminContext` extractor requiring the `admin`
+  role; `/admin/users`, `/admin/users/{userId}/roles[/{role}]`, `/admin/policies[/{id}]`,
+  `/admin/policies/explain`), verified live against a real Postgres/RabbitMQ dev stack
+  (role assign/revoke/list, policy create/list/delete/explain, 401 unauthenticated, 403
+  non-admin).
 - Cut the Rust stack over to actually serving traffic. — **Not started.** No production
   deployment topology exists for it yet (same gap Phase 8 Hardening already tracks for the
   TS stack); this is a distinct, later decision, not implied by the port being finished.
